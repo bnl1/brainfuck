@@ -67,6 +67,9 @@ pub fn main() u8 {
     };
     defer bf.deinit();
 
+    IO.init();
+    defer IO.deinit();
+
     bf.run(compiled_source, true) catch |err| switch (err) {
         BfMachine.Error.tapeOverrun => {
             std.log.scoped(.runtime).err("tape overrun", .{});
@@ -124,11 +127,8 @@ const BfMachine = struct {
             },
             .mem_inc => |n| self.mem[self.ptr] +%= @intCast(n % std.math.maxInt(u8)),
             .mem_dec => |n| self.mem[self.ptr] -%= @intCast(n % std.math.maxInt(u8)),
-            // TODO: buffering
-            .out => _ = std.io.getStdOut()
-                .write(self.mem[self.ptr .. self.ptr + 1]) catch @panic("Write failed"),
-            .in => _ = std.io.getStdIn()
-                .read(self.mem[self.ptr .. self.ptr + 1]) catch @panic("Read failed"),
+            .out => IO.putc(self.mem[self.ptr]),
+            .in => self.mem[self.ptr] = IO.getc(),
             .left_b => |n| if (self.mem[self.ptr] == 0) {
                 self.pc = n;
             },
@@ -246,3 +246,33 @@ fn consumeWhile(slice: []const u8, c: u8) usize {
 
     return n;
 }
+
+const IO = struct {
+    var buffered_reader: std.io.BufferedReader(
+        4096,
+        @TypeOf(std.io.getStdIn().reader()),
+    ) = undefined;
+    var buffered_writer: std.io.BufferedWriter(
+        4096,
+        @TypeOf(std.io.getStdOut().writer()),
+    ) = undefined;
+
+    pub fn init() void {
+        buffered_writer = std.io.bufferedWriter(std.io.getStdOut().writer());
+        buffered_reader = std.io.bufferedReader(std.io.getStdIn().reader());
+    }
+
+    pub fn deinit() void {
+        buffered_writer.flush() catch {};
+    }
+
+    pub fn putc(c: u8) void {
+        buffered_writer.writer().writeByte(c) catch {};
+        if (c == '\n') buffered_writer.flush() catch {};
+    }
+
+    pub fn getc() u8 {
+        buffered_writer.flush() catch {};
+        return buffered_reader.reader().readByte() catch 0;
+    }
+};

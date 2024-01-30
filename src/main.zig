@@ -77,6 +77,17 @@ pub fn main() u8 {
         },
     };
 
+    const bin = Compiler.codegen(allocator, compiled_source) catch @panic("OOM");
+    defer allocator.free(bin);
+
+    const elf = Compiler.createElf(allocator, bin) catch @panic("OOM");
+    defer allocator.free(elf);
+
+    var out_file = std.fs.cwd().createFile("out.bin", .{}) catch @panic("FILE");
+    defer out_file.close();
+
+    out_file.writeAll(elf) catch |err| @panic(@errorName(err));
+
     return SUCCESS;
 }
 
@@ -274,5 +285,167 @@ const IO = struct {
     pub fn getc() u8 {
         buffered_writer.flush() catch {};
         return buffered_reader.reader().readByte() catch 0;
+    }
+};
+
+const Compiler = struct {
+    const MOV_RAX_IMM64 = &.{ 0x48, 0xB8 };
+    const SUB_RSP_RAX = &.{ 0x48, 0x29, 0xC4 };
+    const ADD_RSP_RAX = &.{ 0x48, 0x01, 0xC4 };
+    const ADD_BYTE_RSP_AL = &.{ 0x00, 0x04, 0x24 };
+    const SUB_BYTE_PTR_AL = &.{ 0x28, 0x04, 0x24 };
+    const MOV_AL_BYTE_RSP = &.{ 0x8A, 0x04, 0x24 };
+    const TEST_AL_AL = &.{ 0x84, 0xC0 };
+    const JZ_REL32 = &.{ 0x0F, 0x84 };
+    const JNZ_REL32 = &.{ 0x0F, 0x85 };
+    const MOV_RAX_IMM32 = &.{0xB8};
+    const MOV_RDI_IMM32 = &.{0xBF};
+    const MOV_RSI_RSP = &.{ 0x48, 0x89, 0xE6 };
+    const MOV_RDX_IMM32 = &.{0xBA};
+    const SYSCALL = &.{ 0x0F, 0x05 };
+
+    pub fn codegen(
+        allocator: Allocator,
+        ir_source: []const BFIR,
+    ) Allocator.Error![]u8 {
+        var bin = ArrayList(u8).init(allocator);
+        errdefer bin.deinit();
+        try bin.ensureTotalCapacity(0x10000);
+
+        var addr = ArrayList(usize).init(allocator);
+        defer addr.deinit();
+        try addr.ensureTotalCapacity(0x10000);
+
+        // rsp - ptr
+        // [rsp] - mem
+        //
+
+        // zeros out some stack memory
+        // TODO: rewrite with constants
+        bin.appendSliceAssumeCapacity(&.{ 0xb9, 0xff, 0xff, 0, 0 }); // move ecx, 0xffff
+        // .loop:
+        bin.appendSliceAssumeCapacity(&.{ 0x48, 0x89, 0xC8 }); // mov rax, rcx
+        bin.appendSliceAssumeCapacity(&.{ 0x48, 0xf7, 0xd8 }); // neg rax
+        bin.appendSliceAssumeCapacity(&.{ 0xC6, 0x44, 0x04, 0x01, 0x00 }); // mov BYTE [rsp + rax + 1], 0
+        bin.appendSliceAssumeCapacity(&.{ 0xe2, 0xf3 }); // loop .loop
+
+        for (ir_source) |op| {
+            switch (op) {
+                .ptr_inc => |val| {
+                    bin.appendSliceAssumeCapacity(MOV_RAX_IMM64);
+                    bin.writer().writeInt(usize, val, .little) catch unreachable;
+                    bin.appendSliceAssumeCapacity(SUB_RSP_RAX);
+                },
+                .ptr_dec => |val| {
+                    bin.appendSliceAssumeCapacity(MOV_RAX_IMM64);
+                    bin.writer().writeInt(usize, val, .little) catch unreachable;
+                    bin.appendSliceAssumeCapacity(ADD_RSP_RAX);
+                },
+                .mem_inc => |val| {
+                    bin.appendSliceAssumeCapacity(MOV_RAX_IMM64);
+                    bin.writer().writeInt(usize, val % 256, .little) catch unreachable;
+                    bin.appendSliceAssumeCapacity(ADD_BYTE_RSP_AL);
+                },
+                .mem_dec => |val| {
+                    bin.appendSliceAssumeCapacity(MOV_RAX_IMM64);
+                    bin.writer().writeInt(usize, val % 256, .little) catch unreachable;
+                    bin.appendSliceAssumeCapacity(SUB_BYTE_PTR_AL);
+                },
+                .left_b => {
+                    bin.appendSliceAssumeCapacity(MOV_AL_BYTE_RSP);
+                    bin.appendSliceAssumeCapacity(TEST_AL_AL);
+                    bin.appendSliceAssumeCapacity(JZ_REL32);
+                    addr.appendAssumeCapacity(bin.items.len);
+                    bin.writer().writeInt(i32, 0, .little) catch unreachable;
+                },
+                .right_b => {
+                    bin.appendSliceAssumeCapacity(MOV_AL_BYTE_RSP);
+                    bin.appendSliceAssumeCapacity(TEST_AL_AL);
+                    bin.appendSliceAssumeCapacity(JNZ_REL32);
+                    const lbrace = addr.pop();
+                    const rbrace = bin.items.len;
+                    const lbrace_rel: i32 = @truncate(
+                        @as(isize, @intCast(lbrace)) - @as(isize, @intCast(rbrace)),
+                    );
+                    bin.writer().writeInt(i32, lbrace_rel, .little) catch unreachable;
+                    var array: [4]u8 = undefined;
+                    std.mem.writeInt(u32, &array, @truncate(rbrace - lbrace), .little);
+                    @memcpy(bin.items[lbrace .. lbrace + 4], array[0..4]);
+                },
+                .out => {
+                    bin.appendSliceAssumeCapacity(MOV_RAX_IMM32);
+                    bin.writer().writeInt(i32, 1, .little) catch unreachable;
+                    bin.appendSliceAssumeCapacity(MOV_RDI_IMM32);
+                    bin.writer().writeInt(i32, 1, .little) catch unreachable;
+                    bin.appendSliceAssumeCapacity(MOV_RSI_RSP);
+                    bin.appendSliceAssumeCapacity(MOV_RDX_IMM32);
+                    bin.writer().writeInt(i32, 1, .little) catch unreachable;
+                    bin.appendSliceAssumeCapacity(SYSCALL);
+                },
+                else => @panic("TODO!"),
+            }
+        }
+
+        // TODO: exit
+
+        return try bin.toOwnedSlice();
+    }
+
+    pub fn createElf(
+        allocator: Allocator,
+        binary: []const u8,
+    ) Allocator.Error![]u8 {
+        const elf = std.elf;
+
+        var elf_bin = std.ArrayList(u8).init(allocator);
+        errdefer elf_bin.deinit();
+        try elf_bin.ensureTotalCapacity(
+            (std.math.ceilPowerOfTwo(usize, binary.len) catch unreachable) +
+                @sizeOf(elf.Elf64_Ehdr) + @sizeOf(elf.Elf64_Phdr) + 0x1000,
+        );
+
+        var ehdr: elf.Elf64_Ehdr = undefined;
+        var phdr: elf.Elf64_Phdr = undefined;
+
+        @memset(ehdr.e_ident[0..], 0);
+        @memcpy(ehdr.e_ident[0..4], elf.MAGIC);
+        ehdr.e_ident[elf.EI_CLASS] = elf.ELFCLASS64;
+        ehdr.e_ident[elf.EI_DATA] = elf.ELFDATA2LSB;
+        ehdr.e_ident[elf.EI_VERSION] = 0x01;
+        ehdr.e_type = elf.ET.EXEC;
+        ehdr.e_machine = elf.EM.X86_64;
+        ehdr.e_version = 1;
+        ehdr.e_entry = 0x10000;
+        ehdr.e_phoff = @sizeOf(elf.Elf64_Ehdr);
+        ehdr.e_shoff = 0;
+        ehdr.e_flags = 0;
+        ehdr.e_ehsize = @sizeOf(elf.Elf64_Ehdr);
+        ehdr.e_phentsize = @sizeOf(elf.Elf64_Phdr);
+        ehdr.e_phnum = 1;
+        ehdr.e_shentsize = 0;
+        ehdr.e_shnum = 0;
+        ehdr.e_shstrndx = 0;
+
+        phdr.p_type = elf.PT_LOAD;
+        phdr.p_flags = elf.PF_X | elf.PF_R;
+        phdr.p_offset = 0x1000;
+        phdr.p_vaddr = 0x10000;
+        phdr.p_paddr = phdr.p_vaddr;
+        phdr.p_filesz = std.math.ceilPowerOfTwo(usize, binary.len) catch unreachable;
+        phdr.p_memsz = std.math.ceilPowerOfTwo(usize, binary.len) catch unreachable;
+        phdr.p_align = 0x1000;
+
+        elf_bin.appendSliceAssumeCapacity(std.mem.asBytes(&ehdr));
+        elf_bin.appendSliceAssumeCapacity(std.mem.asBytes(&phdr));
+        elf_bin.appendNTimesAssumeCapacity(0, 0x1000 - elf_bin.items.len);
+
+        elf_bin.appendSliceAssumeCapacity(binary);
+
+        elf_bin.appendNTimesAssumeCapacity(
+            0,
+            (std.math.ceilPowerOfTwo(usize, binary.len) catch unreachable) - binary.len,
+        );
+
+        return try elf_bin.toOwnedSlice();
     }
 };

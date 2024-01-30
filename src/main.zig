@@ -70,13 +70,6 @@ pub fn main() u8 {
     IO.init();
     defer IO.deinit();
 
-    bf.run(compiled_source, true) catch |err| switch (err) {
-        BfMachine.Error.tapeOverrun => {
-            std.log.scoped(.runtime).err("tape overrun", .{});
-            return FAILURE;
-        },
-    };
-
     const bin = Compiler.codegen(allocator, compiled_source) catch @panic("OOM");
     defer allocator.free(bin);
 
@@ -87,6 +80,13 @@ pub fn main() u8 {
     defer out_file.close();
 
     out_file.writeAll(elf) catch |err| @panic(@errorName(err));
+
+    bf.run(compiled_source, true) catch |err| switch (err) {
+        BfMachine.Error.tapeOverrun => {
+            std.log.scoped(.runtime).err("tape overrun", .{});
+            return FAILURE;
+        },
+    };
 
     return SUCCESS;
 }
@@ -303,6 +303,9 @@ const Compiler = struct {
     const MOV_RSI_RSP = &.{ 0x48, 0x89, 0xE6 };
     const MOV_RDX_IMM32 = &.{0xBA};
     const SYSCALL = &.{ 0x0F, 0x05 };
+    const MOV_EAX_IMM32 = &.{0xB8};
+    const XOR_RDI_RDI = &.{ 0x48, 0x31, 0xFF };
+    const SYS_EXIT = 60;
 
     pub fn codegen(
         allocator: Allocator,
@@ -316,6 +319,7 @@ const Compiler = struct {
         defer addr.deinit();
         try addr.ensureTotalCapacity(0x10000);
 
+        // TODO: don't use stack, we cannot control it's size
         // rsp - ptr
         // [rsp] - mem
         //
@@ -386,7 +390,11 @@ const Compiler = struct {
             }
         }
 
-        // TODO: exit
+        // calling exit(0)
+        bin.appendSliceAssumeCapacity(MOV_EAX_IMM32);
+        bin.writer().writeInt(i32, SYS_EXIT, .little) catch unreachable;
+        bin.appendSliceAssumeCapacity(XOR_RDI_RDI);
+        bin.appendSliceAssumeCapacity(SYSCALL);
 
         return try bin.toOwnedSlice();
     }
@@ -400,8 +408,7 @@ const Compiler = struct {
         var elf_bin = std.ArrayList(u8).init(allocator);
         errdefer elf_bin.deinit();
         try elf_bin.ensureTotalCapacity(
-            (std.math.ceilPowerOfTwo(usize, binary.len) catch unreachable) +
-                @sizeOf(elf.Elf64_Ehdr) + @sizeOf(elf.Elf64_Phdr) + 0x1000,
+            binary.len + @sizeOf(elf.Elf64_Ehdr) + @sizeOf(elf.Elf64_Phdr) + 0x1000,
         );
 
         var ehdr: elf.Elf64_Ehdr = undefined;
@@ -431,8 +438,8 @@ const Compiler = struct {
         phdr.p_offset = 0x1000;
         phdr.p_vaddr = 0x10000;
         phdr.p_paddr = phdr.p_vaddr;
-        phdr.p_filesz = std.math.ceilPowerOfTwo(usize, binary.len) catch unreachable;
-        phdr.p_memsz = std.math.ceilPowerOfTwo(usize, binary.len) catch unreachable;
+        phdr.p_filesz = binary.len; //std.math.ceilPowerOfTwo(usize, binary.len) catch unreachable;
+        phdr.p_memsz = binary.len; //std.math.ceilPowerOfTwo(usize, binary.len) catch unreachable;
         phdr.p_align = 0x1000;
 
         elf_bin.appendSliceAssumeCapacity(std.mem.asBytes(&ehdr));
@@ -440,11 +447,6 @@ const Compiler = struct {
         elf_bin.appendNTimesAssumeCapacity(0, 0x1000 - elf_bin.items.len);
 
         elf_bin.appendSliceAssumeCapacity(binary);
-
-        elf_bin.appendNTimesAssumeCapacity(
-            0,
-            (std.math.ceilPowerOfTwo(usize, binary.len) catch unreachable) - binary.len,
-        );
 
         return try elf_bin.toOwnedSlice();
     }

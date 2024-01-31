@@ -384,15 +384,25 @@ const Compiler = struct {
                 },
                 .out => {
                     bin.appendSliceAssumeCapacity(MOV_RAX_IMM32);
-                    bin.writer().writeInt(i32, 1, .little) catch unreachable;
+                    bin.writer().writeInt(u32, 1, .little) catch unreachable;
                     bin.appendSliceAssumeCapacity(MOV_RDI_IMM32);
-                    bin.writer().writeInt(i32, 1, .little) catch unreachable;
+                    bin.writer().writeInt(u32, 1, .little) catch unreachable;
                     bin.appendSliceAssumeCapacity(MOV_RSI_RSP);
                     bin.appendSliceAssumeCapacity(MOV_RDX_IMM32);
-                    bin.writer().writeInt(i32, 1, .little) catch unreachable;
+                    bin.writer().writeInt(u32, 1, .little) catch unreachable;
                     bin.appendSliceAssumeCapacity(SYSCALL);
                 },
-                else => @panic("TODO!"),
+                .in => {
+                    bin.appendSliceAssumeCapacity(MOV_RAX_IMM32);
+                    bin.writer().writeInt(u32, 0, .little) catch unreachable;
+                    bin.appendSliceAssumeCapacity(MOV_RDI_IMM32);
+                    bin.writer().writeInt(u32, 0, .little) catch unreachable;
+                    bin.appendSliceAssumeCapacity(MOV_RSI_RSP);
+                    bin.appendSliceAssumeCapacity(MOV_RDX_IMM32);
+                    bin.writer().writeInt(u32, 1, .little) catch unreachable;
+                    bin.appendSliceAssumeCapacity(SYSCALL);
+                },
+                .debug => std.log.scoped(.compile).warn("Compilation mode does not support '#'", .{}),
             }
         }
 

@@ -311,6 +311,7 @@ const Compiler = struct {
     const NEG_RAX = &.{ 0x48, 0xF7, 0xD8 };
     const MOV_BYTE_RSP_PLUS_RAX_PLUS_ONE_ZERO = &.{ 0xC6, 0x44, 0x04, 0x01, 0x00 };
     const LOOP_F3 = &.{ 0xE2, 0xF3 };
+    const MOV_AL_IMM8 = &.{0xB0};
 
     const SYS_EXIT = 60;
 
@@ -352,13 +353,13 @@ const Compiler = struct {
                     bin.appendSliceAssumeCapacity(ADD_RSP_RAX);
                 },
                 .mem_inc => |val| {
-                    bin.appendSliceAssumeCapacity(MOV_RAX_IMM64);
-                    bin.writer().writeInt(usize, val % 256, .little) catch unreachable;
+                    bin.appendSliceAssumeCapacity(MOV_AL_IMM8);
+                    bin.writer().writeInt(u8, @intCast(val % 256), .little) catch unreachable;
                     bin.appendSliceAssumeCapacity(ADD_BYTE_RSP_AL);
                 },
                 .mem_dec => |val| {
-                    bin.appendSliceAssumeCapacity(MOV_RAX_IMM64);
-                    bin.writer().writeInt(usize, val % 256, .little) catch unreachable;
+                    bin.appendSliceAssumeCapacity(MOV_AL_IMM8);
+                    bin.writer().writeInt(u8, @intCast(val % 256), .little) catch unreachable;
                     bin.appendSliceAssumeCapacity(SUB_BYTE_PTR_AL);
                 },
                 .left_b => {

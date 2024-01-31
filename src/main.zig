@@ -119,6 +119,7 @@ const BfMachine = struct {
         compiled_source: []BFIR,
         clear_memory: bool,
     ) Error!void {
+        @setRuntimeSafety(false);
         if (clear_memory) @memset(self.mem, 0);
 
         while (self.pc < compiled_source.len) {
@@ -305,6 +306,12 @@ const Compiler = struct {
     const SYSCALL = &.{ 0x0F, 0x05 };
     const MOV_EAX_IMM32 = &.{0xB8};
     const XOR_RDI_RDI = &.{ 0x48, 0x31, 0xFF };
+    const MOV_ECX_IMM32 = &.{0xB9};
+    const MOV_RAX_RCX = &.{ 0x48, 0x89, 0xC8 };
+    const NEG_RAX = &.{ 0x48, 0xF7, 0xD8 };
+    const MOV_BYTE_RSP_PLUS_RAX_PLUS_ONE_ZERO = &.{ 0xC6, 0x44, 0x04, 0x01, 0x00 };
+    const LOOP_F3 = &.{ 0xE2, 0xF3 };
+
     const SYS_EXIT = 60;
 
     pub fn codegen(
@@ -325,13 +332,12 @@ const Compiler = struct {
         //
 
         // zeros out some stack memory
-        // TODO: rewrite with constants
-        bin.appendSliceAssumeCapacity(&.{ 0xb9, 0xff, 0xff, 0, 0 }); // move ecx, 0xffff
-        // .loop:
-        bin.appendSliceAssumeCapacity(&.{ 0x48, 0x89, 0xC8 }); // mov rax, rcx
-        bin.appendSliceAssumeCapacity(&.{ 0x48, 0xf7, 0xd8 }); // neg rax
-        bin.appendSliceAssumeCapacity(&.{ 0xC6, 0x44, 0x04, 0x01, 0x00 }); // mov BYTE [rsp + rax + 1], 0
-        bin.appendSliceAssumeCapacity(&.{ 0xe2, 0xf3 }); // loop .loop
+        bin.appendSliceAssumeCapacity(MOV_ECX_IMM32);
+        bin.writer().writeInt(u32, 0xFFFF, .little) catch unreachable;
+        bin.appendSliceAssumeCapacity(MOV_RAX_RCX);
+        bin.appendSliceAssumeCapacity(NEG_RAX);
+        bin.appendSliceAssumeCapacity(MOV_BYTE_RSP_PLUS_RAX_PLUS_ONE_ZERO);
+        bin.appendSliceAssumeCapacity(LOOP_F3);
 
         for (ir_source) |op| {
             switch (op) {
@@ -438,8 +444,8 @@ const Compiler = struct {
         phdr.p_offset = 0x1000;
         phdr.p_vaddr = 0x10000;
         phdr.p_paddr = phdr.p_vaddr;
-        phdr.p_filesz = binary.len; //std.math.ceilPowerOfTwo(usize, binary.len) catch unreachable;
-        phdr.p_memsz = binary.len; //std.math.ceilPowerOfTwo(usize, binary.len) catch unreachable;
+        phdr.p_filesz = binary.len;
+        phdr.p_memsz = binary.len;
         phdr.p_align = 0x1000;
 
         elf_bin.appendSliceAssumeCapacity(std.mem.asBytes(&ehdr));

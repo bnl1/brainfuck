@@ -7,9 +7,10 @@ pub fn build(b: *std.Build) void {
 
     const exe = b.addExecutable(.{
         .name = "brainfuck",
-        .root_source_file = .{ .path = "src/main.zig" },
+        .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .use_llvm = false,
     });
 
     b.installArtifact(exe);

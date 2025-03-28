@@ -63,7 +63,7 @@ pub fn main() u8 {
 
     var bf = BfMachine.init(allocator, BF_MEMORY) catch |err| {
         std.log.err("{s}", .{@errorName(err)});
-        std.os.exit(FAILURE);
+        return FAILURE;
     };
     defer bf.deinit();
 
@@ -211,7 +211,7 @@ const BFIR = union(enum) {
                     break :blk .{ .left_b = undefined };
                 },
                 ']' => blk: {
-                    const left = bracket_stack.popOrNull() orelse {
+                    const left = bracket_stack.pop() orelse {
                         diag.byte_offset = i;
                         diag.msg = "Unmatched ']'";
                         return Error.compileError;
@@ -373,7 +373,7 @@ const Compiler = struct {
                     bin.appendSliceAssumeCapacity(MOV_AL_BYTE_RSP);
                     bin.appendSliceAssumeCapacity(TEST_AL_AL);
                     bin.appendSliceAssumeCapacity(JNZ_REL32);
-                    const lbrace = addr.pop();
+                    const lbrace = addr.pop().?;
                     const rbrace = bin.items.len;
                     const lbrace_rel: i32 = @truncate(
                         @as(isize, @intCast(lbrace)) - @as(isize, @intCast(rbrace)),
